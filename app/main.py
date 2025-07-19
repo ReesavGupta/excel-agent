@@ -1,0 +1,337 @@
+# app/main.py (Phase 2 - Enhanced with LangChain)
+import streamlit as st
+import pandas as pd
+import os
+import sys
+from pathlib import Path
+import logging
+import json
+from datetime import datetime
+
+# Add app directory to path
+sys.path.append(str(Path(__file__).parent))
+
+# Import components
+from config import Config
+from data_tools.file_handler import ExcelFileHandler
+from data_tools.column_mapper import ColumnMapper
+from agents.excel_agent import ExcelAgent
+from utils.query_parser import QueryParser
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Page configuration
+st.set_page_config(
+    page_title="Intelligent Excel Agent",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Initialize components
+@st.cache_resource
+def get_components():
+    config = Config()
+    file_handler = ExcelFileHandler(config)
+    column_mapper = ColumnMapper()
+    agent = ExcelAgent(config, file_handler, column_mapper)
+    query_parser = QueryParser(column_mapper)
+    return config, file_handler, column_mapper, agent, query_parser
+
+def display_file_info(file_info):
+    """Display comprehensive file information"""
+    st.subheader("📋 File Overview")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("File Size", f"{file_info['file_size_mb']:.1f} MB")
+    with col2:
+        st.metric("Worksheets", file_info['total_sheets'])
+    with col3:
+        largest_sheet = max(sheet['max_row'] for sheet in file_info['sheet_info'].values())
+        st.metric("Max Rows", f"{largest_sheet:,}")
+    with col4:
+        total_rows = sum(sheet['max_row'] for sheet in file_info['sheet_info'].values())
+        st.metric("Total Rows", f"{total_rows:,}")
+    
+    # Sheet details
+    st.subheader("📊 Worksheet Details")
+    sheet_data = []
+    for name, info in file_info['sheet_info'].items():
+        sheet_data.append({
+            "Sheet Name": name,
+            "Rows": f"{info['max_row']:,}",
+            "Columns": info['max_column'],
+            "Has Data": "✅" if info['has_data'] else "❌"
+        })
+    
+    st.dataframe(pd.DataFrame(sheet_data), use_container_width=True)
+
+def display_query_examples():
+    """Display example queries"""
+    st.subheader("💡 Example Queries")
+    
+    examples = [
+        "Show me all data from Sheet1",
+        "Filter sales data where revenue > 50000",
+        "Show total sales by region",
+        "Create a pivot table showing sales by product and month",
+        "Sort customers by revenue in descending order",
+        "Find all orders from the last 6 months",
+        "Show average price by category",
+        "List top 10 products by sales volume"
+    ]
+    
+    cols = st.columns(2)
+    for i, example in enumerate(examples):
+        with cols[i % 2]:
+            if st.button(example, key=f"example_{i}"):
+                st.session_state.query_input = example
+
+def process_query_response(response):
+    """Process and display query response"""
+    if response['success']:
+        st.success("✅ Query processed successfully!")
+        
+        # Display response
+        st.subheader("🎯 Results")
+        
+        # Try to parse JSON response for better formatting
+        try:
+            if isinstance(response['response'], str) and response['response'].startswith('{'):
+                parsed_response = json.loads(response['response'])
+                
+                # Display based on operation type
+                if 'sample_data' in parsed_response:
+                    st.write("**Sample Data:**")
+                    st.dataframe(pd.DataFrame(parsed_response['sample_data']))
+                
+                if 'results' in parsed_response:
+                    st.write("**Results:**")
+                    st.dataframe(pd.DataFrame(parsed_response['results']))
+                
+                if 'summary_stats' in parsed_response and parsed_response['summary_stats']:
+                    st.write("**Summary Statistics:**")
+                    st.json(parsed_response['summary_stats'])
+                
+                if 'shape' in parsed_response:
+                    st.info(f"Result shape: {parsed_response['shape'][0]:,} rows × {parsed_response['shape'][1]} columns")
+                
+                # Show full response in expander
+                with st.expander("🔍 Full Response Details"):
+                    st.json(parsed_response)
+                    
+            else:
+                # Display as text if not JSON
+                st.write(response['response'])
+                
+        except json.JSONDecodeError:
+            st.write(response['response'])
+            
+    else:
+        st.error(f"❌ Query failed: {response.get('error', 'Unknown error')}")
+
+def main():
+    st.title("🤖 Intelligent Excel Agent - Phase 2")
+    st.markdown("*Powered by LangChain & OpenAI GPT-4*")
+    
+    # Get components
+    config, file_handler, column_mapper, agent, query_parser = get_components()
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("🎛️ Control Panel")
+        
+        # API Key input
+        api_key = st.text_input(
+            "OpenAI API Key", 
+            type="password", 
+            value=config.OPENAI_API_KEY or "",
+            help="Enter your OpenAI API key"
+        )
+        
+        if api_key:
+            config.OPENAI_API_KEY = api_key
+            os.environ["OPENAI_API_KEY"] = api_key
+        
+        # Model selection
+        model = st.selectbox(
+            "LLM Model",
+            ["gpt-4", "gpt-3.5-turbo", "gpt-4-turbo"],
+            index=0
+        )
+        config.MODEL_NAME = model
+        
+        # Advanced settings
+        with st.expander("⚙️ Advanced Settings"):
+            config.TEMPERATURE = st.slider("Temperature", 0.0, 1.0, 0.1, 0.1)
+            config.MAX_TOKENS = st.slider("Max Tokens", 500, 4000, 2000, 100)
+            config.CHUNK_SIZE = st.slider("Chunk Size", 100, 5000, 1000, 100)
+    
+    # Main content area
+    tab1, tab2, tab3 = st.tabs(["📁 File Upload", "🤖 AI Assistant", "📊 Data Explorer"])
+    
+    with tab1:
+        st.header("📁 File Upload & Analysis")
+        
+        # File upload
+        uploaded_file = st.file_uploader(
+            f"Upload Excel file (max {config.MAX_FILE_SIZE_MB}MB)", 
+            type=["xlsx", "xls"],
+            help="Supported formats: .xlsx, .xls"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                # Save uploaded file
+                upload_dir = Path("uploads")
+                upload_dir.mkdir(exist_ok=True)
+                file_path = upload_dir / uploaded_file.name
+                
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                
+                st.success(f"✅ File '{uploaded_file.name}' uploaded successfully!")
+                
+                # Load file into agent
+                with st.spinner("🔄 Loading file into AI agent..."):
+                    load_result = agent.load_file(str(file_path))
+                
+                if load_result['success']:
+                    st.success("🤖 File loaded into AI agent!")
+                    
+                    # Store file info in session state
+                    st.session_state['file_loaded'] = True
+                    st.session_state['file_info'] = load_result['file_info']
+                    st.session_state['agent'] = agent
+                    
+                    # Display file information
+                    display_file_info(load_result['file_info'])
+                    
+                else:
+                    st.error(f"❌ Failed to load file: {load_result.get('error', 'Unknown error')}")
+                    
+            except Exception as e:
+                st.error(f"❌ Error processing file: {str(e)}")
+                logger.error(f"File processing error: {e}")
+    
+    with tab2:
+        st.header("🤖 AI Assistant")
+        
+        if not st.session_state.get('file_loaded', False):
+            st.warning("⚠️ Please upload and load a file first in the File Upload tab.")
+            return
+        
+        if not config.OPENAI_API_KEY:
+            st.warning("⚠️ Please enter your OpenAI API key in the sidebar.")
+            return
+        
+        # Query examples
+        display_query_examples()
+        
+        # Query input
+        st.subheader("💬 Ask Questions About Your Data")
+        
+        # Text input with session state
+        if 'query_input' not in st.session_state:
+            st.session_state.query_input = ""
+        
+        query = st.text_area(
+            "Enter your question:",
+            value=st.session_state.query_input,
+            height=100,
+            placeholder="e.g., Show me sales data where revenue > 50000"
+        )
+        
+        col1, col2 = st.columns([1, 4])
+        
+        with col1:
+            submit_query = st.button("🚀 Submit Query", type="primary")
+        
+        with col2:
+            clear_query = st.button("🗑️ Clear")
+            if clear_query:
+                st.session_state.query_input = ""
+                st.experimental_rerun()
+        
+        # Process query
+        if submit_query and query.strip():
+            with st.spinner("🤖 AI is analyzing your request..."):
+                try:
+                    # Get the agent from session state
+                    current_agent = st.session_state.get('agent')
+                    if current_agent:
+                        response = current_agent.query(query)
+                        process_query_response(response)
+                        
+                        # Store in query history
+                        if 'query_history' not in st.session_state:
+                            st.session_state.query_history = []
+                        
+                        st.session_state.query_history.append({
+                            'timestamp': datetime.now().strftime("%H:%M:%S"),
+                            'query': query,
+                            'response': response
+                        })
+                    else:
+                        st.error("❌ Agent not available. Please reload the file.")
+                        
+                except Exception as e:
+                    st.error(f"❌ Error processing query: {str(e)}")
+                    logger.error(f"Query processing error: {e}")
+        
+        # Query history
+        if st.session_state.get('query_history'):
+            st.subheader("📚 Query History")
+            
+            for i, item in enumerate(reversed(st.session_state.query_history[-5:])):  # Show last 5
+                with st.expander(f"[{item['timestamp']}] {item['query'][:50]}..."):
+                    st.write(f"**Query:** {item['query']}")
+                    if item['response']['success']:
+                        st.write(f"**Response:** {item['response']['response'][:200]}...")
+                    else:
+                        st.error(f"**Error:** {item['response'].get('error', 'Unknown error')}")
+    
+    with tab3:
+        st.header("📊 Data Explorer")
+        
+        if not st.session_state.get('file_loaded', False):
+            st.warning("⚠️ Please upload and load a file first in the File Upload tab.")
+            return
+        
+        file_info = st.session_state.get('file_info', {})
+        
+        # Sheet selector
+        if file_info.get('sheet_names'):
+            selected_sheet = st.selectbox(
+                "Select Worksheet:",
+                file_info['sheet_names']
+            )
+            
+            if selected_sheet:
+                sheet_info = file_info['sheet_info'][selected_sheet]
+                
+                st.info(f"**{selected_sheet}**: {sheet_info['max_row']:,} rows × {sheet_info['max_column']} columns")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    sample_size = st.slider("Sample Size", 10, 1000, 100)
+                
+                with col2:
+                    load_sample = st.button("📥 Load Sample Data")
+                
+                if load_sample:
+                    with st.spinner("Loading sample data..."):
+                        try:
+                            current_agent = st.session_state.get('agent')
+                            if current_agent:
+                                response = current_agent.query(f"Show me the first {sample_size} rows from {selected_sheet}")
+                                process_query_response(response)
+                        except Exception as e:
+                            st.error(f"❌ Error loading sample: {str(e)}")
+
+if __name__ == "__main__":
+    main()
