@@ -230,3 +230,111 @@ pivot_table_tool = StructuredTool.from_function(
     description="Create a pivot table from Excel data.",
     args_schema=PivotTableArgs
 )
+
+# --- Structured Tool: Merge Worksheets ---
+from typing import List
+
+class MergeWorksheetsArgs(BaseModel):
+    sheet_names: Optional[List[str]] = Field(None, description="List of sheet names to merge (default: all)")
+    mode: str = Field("stack", description="Merge mode: 'stack' (vertical) or 'key' (horizontal join)")
+    key: Optional[str] = Field(None, description="Column name to join on if mode is 'key'")
+    how: str = Field("outer", description="Type of join for key-based merge: 'outer', 'inner', 'left', or 'right'")
+    file_path: Optional[str] = Field(None, description="Path to the Excel file")
+
+def merge_worksheets(sheet_names: Optional[List[str]] = None, mode: str = "stack", key: Optional[str] = None, how: str = "outer", file_path: Optional[str] = None) -> str:
+    import pandas as pd
+    import json
+    if not file_path:
+        return "No file loaded."
+    try:
+        xl = pd.ExcelFile(file_path)
+        sheets = sheet_names or xl.sheet_names
+        dfs = [xl.parse(sheet) for sheet in sheets]
+        if mode == "stack":
+            merged = pd.concat(dfs, ignore_index=True)
+        elif mode == "key" and key:
+            merged = dfs[0]
+            for df in dfs[1:]:
+                merged = pd.merge(merged, df, on=key, how=how)
+        else:
+            return json.dumps({"success": False, "error": "Invalid mode or missing key for key-based merge."})
+        merged = merged.reset_index(drop=True)
+        for col in merged.columns:
+            merged[col] = pd.to_numeric(merged[col], errors='coerce')
+            if merged[col].dtype == 'object':
+                merged[col] = merged[col].astype(str)
+        merged = merged.dropna(how='all')
+        result = {
+            "success": True,
+            "mode": mode,
+            "how": how,
+            "sheets": sheets,
+            "shape": merged.shape,
+            "sample_data": merged.head(10).to_dict('records')
+        }
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+merge_worksheets_tool = StructuredTool.from_function(
+    func=merge_worksheets,
+    name="merge_worksheets",
+    description="Merge multiple worksheets by stacking rows or joining on a key column. For key-based merges, you can specify the join type: 'outer', 'inner', 'left', or 'right'.",
+    args_schema=MergeWorksheetsArgs
+)
+
+# --- Structured Tool: Split Worksheet ---
+from pydantic import BaseModel, Field
+from typing import Optional, List
+
+class SplitWorksheetArgs(BaseModel):
+    sheet_name: str = Field(..., description="Name of the worksheet to split")
+    column: str = Field(..., description="Column to split by (each unique value becomes a new sheet)")
+    file_path: Optional[str] = Field(None, description="Path to the Excel file")
+
+def split_worksheet(sheet_name: str, column: str, file_path: Optional[str] = None) -> str:
+    import pandas as pd
+    import os
+    import json
+    if not file_path:
+        return "No file loaded."
+    try:
+        xl = pd.ExcelFile(file_path)
+        if sheet_name not in xl.sheet_names:
+            return json.dumps({"success": False, "error": f"Sheet {sheet_name} not found."})
+        df = xl.parse(sheet_name)
+        if column not in df.columns:
+            return json.dumps({"success": False, "error": f"Column {column} not found in {sheet_name}."})
+        unique_values = df[column].dropna().unique()
+        split_files = []
+        summary = []
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        for val in unique_values:
+            sub_df = df[df[column] == val]
+            out_path = os.path.join("uploads", f"{base_name}_{sheet_name}_{str(val)}.xlsx")
+            sub_df.to_excel(out_path, index=False)
+            split_files.append(out_path)
+            summary.append({
+                "value": str(val),
+                "rows": len(sub_df),
+                "file": out_path,
+                "sample_data": sub_df.head(5).to_dict('records')
+            })
+        result = {
+            "success": True,
+            "sheet": sheet_name,
+            "column": column,
+            "unique_values": [str(v) for v in unique_values],
+            "split_files": split_files,
+            "summary": summary
+        }
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+split_worksheet_tool = StructuredTool.from_function(
+    func=split_worksheet,
+    name="split_worksheet",
+    description="Split a worksheet into multiple sheets/files based on unique values in a selected column. Each unique value becomes a new Excel file in the uploads/ directory.",
+    args_schema=SplitWorksheetArgs
+)

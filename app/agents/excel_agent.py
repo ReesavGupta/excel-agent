@@ -9,7 +9,9 @@ from data_tools.excel_tools import (
     filter_data_tool,
     aggregate_data_tool,
     sort_data_tool,
-    pivot_table_tool
+    pivot_table_tool,
+    merge_worksheets_tool,
+    split_worksheet_tool
 )
 
 logger = logging.getLogger(__name__)
@@ -31,7 +33,9 @@ class ExcelAgent:
             filter_data_tool,
             aggregate_data_tool,
             sort_data_tool,
-            pivot_table_tool
+            pivot_table_tool,
+            merge_worksheets_tool,
+            split_worksheet_tool
         ]
         # Now bind tools to the LLM
         self.llm = ChatGroq(
@@ -87,6 +91,8 @@ AVAILABLE OPERATIONS:
 - aggregate_data: Perform groupby and aggregations
 - sort_data: Sort data by columns
 - pivot_table: Create pivot tables
+- merge_worksheets: Merge multiple sheets
+- split_worksheet: Split a worksheet into multiple files based on unique values in a column
 
 When the user asks about data analysis, use these tools to provide accurate results.
 Always specify the sheet_name when using tools.

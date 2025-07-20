@@ -99,17 +99,13 @@ def process_query_response(response):
     if response['success']:
         st.success("✅ Query processed successfully!")
         st.subheader("🎯 Results")
-
-        # Try to parse tool results if present
         try:
-            # If response is a string with multiple tool results, split and parse each
             if isinstance(response['response'], str) and 'Tool ' in response['response']:
                 tool_blocks = response['response'].split('Tool ')
                 for block in tool_blocks:
                     block = block.strip()
                     if not block:
                         continue
-                    # Extract tool name and JSON
                     if 'result:' in block:
                         tool_name, json_part = block.split('result:', 1)
                         tool_name = tool_name.strip()
@@ -117,6 +113,17 @@ def process_query_response(response):
                         try:
                             parsed = json.loads(json_part)
                             if isinstance(parsed, dict):
+                                # --- Special handling for split_worksheet ---
+                                if tool_name == 'split_worksheet' and 'summary' in parsed:
+                                    st.write("**Split Summary:**")
+                                    for item in parsed['summary']:
+                                        st.write(f"Value: {item['value']} | Rows: {item['rows']} | File: {item['file']}")
+                                        st.dataframe(pd.DataFrame(item['sample_data']))
+                                        import os
+                                        if os.path.exists(item['file']):
+                                            with open(item['file'], "rb") as f:
+                                                st.download_button(f"Download {os.path.basename(item['file'])}", f, file_name=os.path.basename(item['file']))
+                                # --- End special handling ---
                                 if 'sample_results' in parsed and parsed['sample_results']:
                                     st.write("**Sample Results:**")
                                     st.dataframe(pd.DataFrame(parsed['sample_results']))
@@ -131,7 +138,6 @@ def process_query_response(response):
                                     st.json(parsed['summary_stats'])
                                 if 'error' in parsed:
                                     st.error(parsed['error'])
-                                # Show full JSON in expander
                                 with st.expander("🔍 Full Tool Output"):
                                     st.json(parsed)
                             else:
@@ -142,9 +148,19 @@ def process_query_response(response):
                     else:
                         st.write(block)
             else:
-                # Fallback: try to parse as JSON
                 if isinstance(response['response'], str) and response['response'].startswith('{'):
                     parsed_response = json.loads(response['response'])
+                    # --- Special handling for split_worksheet ---
+                    if 'summary' in parsed_response:
+                        st.write("**Split Summary:**")
+                        for item in parsed_response['summary']:
+                            st.write(f"Value: {item['value']} | Rows: {item['rows']} | File: {item['file']}")
+                            st.dataframe(pd.DataFrame(item['sample_data']))
+                            import os
+                            if os.path.exists(item['file']):
+                                with open(item['file'], "rb") as f:
+                                    st.download_button(f"Download {os.path.basename(item['file'])}", f, file_name=os.path.basename(item['file']))
+                    # --- End special handling ---
                     if 'sample_data' in parsed_response:
                         st.write("**Sample Data:**")
                         st.dataframe(pd.DataFrame(parsed_response['sample_data']))
@@ -328,33 +344,82 @@ def main():
     
     with tab3:
         st.header("📊 Data Explorer")
-        
         if not st.session_state.get('file_loaded', False):
             st.warning("⚠️ Please upload and load a file first in the File Upload tab.")
             return
-        
         file_info = st.session_state.get('file_info', {})
-        
         # Sheet selector
         if file_info.get('sheet_names'):
             selected_sheet = st.selectbox(
                 "Select Worksheet:",
-                file_info['sheet_names']
+                file_info['sheet_names'],
+                key="split_sheet_selector"
             )
-            
             if selected_sheet:
                 sheet_info = file_info['sheet_info'][selected_sheet]
-                
                 st.info(f"**{selected_sheet}**: {sheet_info['max_row']:,} rows × {sheet_info['max_column']} columns")
-                
+                # --- Split Worksheet UI ---
+                st.subheader("✂️ Split Worksheet by Column")
+                # Load columns for the selected sheet
+                try:
+                    current_agent = st.session_state.get('agent')
+                    # Get first 1 row to get columns
+                    response = current_agent.query(f"Show me the first 1 rows from {selected_sheet}")
+                    columns = []
+                    if response['success']:
+                        # Try to extract columns from sample_data
+                        try:
+                            parsed = json.loads(response['response'].split('result:',1)[1])
+                            if 'sample_data' in parsed and parsed['sample_data']:
+                                columns = list(parsed['sample_data'][0].keys())
+                        except Exception:
+                            pass
+                    if not columns:
+                        columns = [f"Column {i+1}" for i in range(sheet_info['max_column'])]
+                except Exception:
+                    columns = []
+                split_column = st.selectbox("Select column to split by:", columns, key="split_column_selector")
+                split_btn = st.button("✂️ Split Worksheet", key="split_btn")
+                if split_btn and split_column:
+                    with st.spinner(f"Splitting {selected_sheet} by '{split_column}'..."):
+                        try:
+                            split_response = current_agent.query(f"Split {selected_sheet} by the '{split_column}' column, so each value gets its own Excel file.")
+                            if split_response['success']:
+                                st.success("Worksheet split successfully!")
+                                # Try to parse and show summary
+                                try:
+                                    parsed = json.loads(split_response['response'].split('result:',1)[1])
+                                    if 'summary' in parsed:
+                                        st.write("**Split Summary:**")
+                                        for item in parsed['summary']:
+                                            st.write(f"Value: {item['value']} | Rows: {item['rows']} | File: {item['file']}")
+                                            st.dataframe(pd.DataFrame(item['sample_data']))
+                                            if os.path.exists(item['file']):
+                                                with open(item['file'], "rb") as f:
+                                                    st.download_button(f"Download {os.path.basename(item['file'])}", f, file_name=os.path.basename(item['file']))
+                                except Exception as e:
+                                    st.error(f"Could not parse split summary: {e}")
+                                    st.write(split_response['response'])
+                            else:
+                                st.error(f"Split failed: {split_response.get('error', 'Unknown error')}")
+                        except Exception as e:
+                            st.error(f"Error splitting worksheet: {e}")
+                st.markdown("---")
+        # Existing Data Explorer sample loader ...
+        if file_info.get('sheet_names'):
+            selected_sheet = st.selectbox(
+                "Select Worksheet:",
+                file_info['sheet_names'],
+                key="sample_sheet_selector"
+            )
+            if selected_sheet:
+                sheet_info = file_info['sheet_info'][selected_sheet]
+                st.info(f"**{selected_sheet}**: {sheet_info['max_row']:,} rows × {sheet_info['max_column']} columns")
                 col1, col2 = st.columns(2)
-                
                 with col1:
                     sample_size = st.slider("Sample Size", 10, 1000, 100)
-                
                 with col2:
                     load_sample = st.button("📥 Load Sample Data")
-                
                 if load_sample:
                     with st.spinner("Loading sample data..."):
                         try:
