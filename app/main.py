@@ -7,6 +7,9 @@ from pathlib import Path
 import logging
 import json
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Add app directory to path
 sys.path.append(str(Path(__file__).parent))
@@ -17,6 +20,7 @@ from data_tools.file_handler import ExcelFileHandler
 from data_tools.column_mapper import ColumnMapper
 from agents.excel_agent import ExcelAgent
 from utils.query_parser import QueryParser
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -91,51 +95,79 @@ def display_query_examples():
                 st.session_state.query_input = example
 
 def process_query_response(response):
-    """Process and display query response"""
+    """Process and display query response in a presentable format"""
     if response['success']:
         st.success("✅ Query processed successfully!")
-        
-        # Display response
         st.subheader("🎯 Results")
-        
-        # Try to parse JSON response for better formatting
+
+        # Try to parse tool results if present
         try:
-            if isinstance(response['response'], str) and response['response'].startswith('{'):
-                parsed_response = json.loads(response['response'])
-                
-                # Display based on operation type
-                if 'sample_data' in parsed_response:
-                    st.write("**Sample Data:**")
-                    st.dataframe(pd.DataFrame(parsed_response['sample_data']))
-                
-                if 'results' in parsed_response:
-                    st.write("**Results:**")
-                    st.dataframe(pd.DataFrame(parsed_response['results']))
-                
-                if 'summary_stats' in parsed_response and parsed_response['summary_stats']:
-                    st.write("**Summary Statistics:**")
-                    st.json(parsed_response['summary_stats'])
-                
-                if 'shape' in parsed_response:
-                    st.info(f"Result shape: {parsed_response['shape'][0]:,} rows × {parsed_response['shape'][1]} columns")
-                
-                # Show full response in expander
-                with st.expander("🔍 Full Response Details"):
-                    st.json(parsed_response)
-                    
+            # If response is a string with multiple tool results, split and parse each
+            if isinstance(response['response'], str) and 'Tool ' in response['response']:
+                tool_blocks = response['response'].split('Tool ')
+                for block in tool_blocks:
+                    block = block.strip()
+                    if not block:
+                        continue
+                    # Extract tool name and JSON
+                    if 'result:' in block:
+                        tool_name, json_part = block.split('result:', 1)
+                        tool_name = tool_name.strip()
+                        st.markdown(f"#### 🛠️ {tool_name}")
+                        try:
+                            parsed = json.loads(json_part)
+                            if isinstance(parsed, dict):
+                                if 'sample_results' in parsed and parsed['sample_results']:
+                                    st.write("**Sample Results:**")
+                                    st.dataframe(pd.DataFrame(parsed['sample_results']))
+                                if 'sample_data' in parsed and parsed['sample_data']:
+                                    st.write("**Sample Data:**")
+                                    st.dataframe(pd.DataFrame(parsed['sample_data']))
+                                if 'results' in parsed and parsed['results']:
+                                    st.write("**Results:**")
+                                    st.dataframe(pd.DataFrame(parsed['results']))
+                                if 'summary_stats' in parsed and parsed['summary_stats']:
+                                    st.write("**Summary Statistics:**")
+                                    st.json(parsed['summary_stats'])
+                                if 'error' in parsed:
+                                    st.error(parsed['error'])
+                                # Show full JSON in expander
+                                with st.expander("🔍 Full Tool Output"):
+                                    st.json(parsed)
+                            else:
+                                st.write(parsed)
+                        except Exception as e:
+                            st.error(f"Could not parse tool output: {e}")
+                            st.write(json_part)
+                    else:
+                        st.write(block)
             else:
-                # Display as text if not JSON
-                st.write(response['response'])
-                
+                # Fallback: try to parse as JSON
+                if isinstance(response['response'], str) and response['response'].startswith('{'):
+                    parsed_response = json.loads(response['response'])
+                    if 'sample_data' in parsed_response:
+                        st.write("**Sample Data:**")
+                        st.dataframe(pd.DataFrame(parsed_response['sample_data']))
+                    if 'results' in parsed_response:
+                        st.write("**Results:**")
+                        st.dataframe(pd.DataFrame(parsed_response['results']))
+                    if 'summary_stats' in parsed_response and parsed_response['summary_stats']:
+                        st.write("**Summary Statistics:**")
+                        st.json(parsed_response['summary_stats'])
+                    if 'shape' in parsed_response:
+                        st.info(f"Result shape: {parsed_response['shape'][0]:,} rows × {parsed_response['shape'][1]} columns")
+                    with st.expander("🔍 Full Response Details"):
+                        st.json(parsed_response)
+                else:
+                    st.write(response['response'])
         except json.JSONDecodeError:
             st.write(response['response'])
-            
     else:
         st.error(f"❌ Query failed: {response.get('error', 'Unknown error')}")
 
 def main():
     st.title("🤖 Intelligent Excel Agent - Phase 2")
-    st.markdown("*Powered by LangChain & OpenAI GPT-4*")
+    st.markdown("*Powered by LangChain & Groq LLM*")
     
     # Get components
     config, file_handler, column_mapper, agent, query_parser = get_components()
@@ -146,20 +178,20 @@ def main():
         
         # API Key input
         api_key = st.text_input(
-            "OpenAI API Key", 
+            "Groq API Key", 
             type="password", 
-            value=config.OPENAI_API_KEY or "",
-            help="Enter your OpenAI API key"
+            value=config.GROQ_API_KEY or "",
+            help="Enter your Groq API key"
         )
         
         if api_key:
-            config.OPENAI_API_KEY = api_key
-            os.environ["OPENAI_API_KEY"] = api_key
+            config.GROQ_API_KEY = api_key
+            os.environ["GROQ_API_KEY"] = api_key
         
         # Model selection
         model = st.selectbox(
             "LLM Model",
-            ["gpt-4", "gpt-3.5-turbo", "gpt-4-turbo"],
+            ["llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768", "gemma2-9b-it"],
             index=0
         )
         config.MODEL_NAME = model
@@ -224,8 +256,8 @@ def main():
             st.warning("⚠️ Please upload and load a file first in the File Upload tab.")
             return
         
-        if not config.OPENAI_API_KEY:
-            st.warning("⚠️ Please enter your OpenAI API key in the sidebar.")
+        if not config.GROQ_API_KEY:
+            st.warning("⚠️ Please enter your Groq API key in the sidebar.")
             return
         
         # Query examples
@@ -254,7 +286,7 @@ def main():
             clear_query = st.button("🗑️ Clear")
             if clear_query:
                 st.session_state.query_input = ""
-                st.experimental_rerun()
+                st.rerun()
         
         # Process query
         if submit_query and query.strip():

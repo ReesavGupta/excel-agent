@@ -10,9 +10,9 @@ class Config:
     SUPPORTED_FORMATS: list | None = None
     CHUNK_SIZE: int = 1000
     
-    # LLM Configuration
-    OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
-    MODEL_NAME: str = "gpt-4"
+    # LLM Configuration (Groq)
+    GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
+    MODEL_NAME: str = "llama3-8b-8192"  # Fast and efficient Groq model
     MAX_TOKENS: int = 2000
     TEMPERATURE: float = 0.1
     

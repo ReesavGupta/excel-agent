@@ -1,307 +1,232 @@
 from langchain.tools import BaseTool
-from langchain.pydantic_v1 import BaseModel, Field
+from pydantic import BaseModel, Field
 from typing import Dict, List, Any, Optional, Union
 import pandas as pd
 import json
 from datetime import datetime
 import logging
+from langchain_core.tools import StructuredTool
 
 logger = logging.getLogger(__name__)
 
-class ExcelToolInput(BaseModel):
-    """Input schema for Excel tools"""
-    sheet_name: str = Field(description="Name of the Excel worksheet")
-    operation: str = Field(description="Operation to perform")
-    parameters: Dict[str, Any] = Field(default={}, description="Operation parameters")
+# --- Structured Tool: Read Worksheet ---
+class ReadWorksheetArgs(BaseModel):
+    sheet_name: str = Field(default="Sheet1", description="Name of the worksheet")
+    nrows: int = Field(default=1000, description="Number of rows to read")
+    file_path: Optional[str] = Field(default=None, description="Path to the Excel file")
 
-class ReadWorksheetTool(BaseTool):
-    name: str = "read_worksheet"
-    description: str = """
-    Read data from an Excel worksheet. 
-    Input: sheet_name (string), parameters (dict with optional: nrows, skiprows, columns)
-    Returns: DataFrame info and sample data
-    """
-    
-    def __init__(self, file_handler):
-        super().__init__()
-        self.file_handler = file_handler
-    
-    def _run(self, sheet_name: str, parameters: Dict[str, Any]| None = None) -> str:
-        try:
-            if not hasattr(self, '_current_file'):
-                return "No file currently loaded. Please upload a file first."
-            
-            params = parameters or {}
-            nrows = params.get('nrows', 1000)
-            
-            # Read the worksheet
-            df = pd.read_excel(self._current_file, sheet_name=sheet_name, nrows=nrows)
-            
-            result = {
-                "success": True,
-                "sheet_name": sheet_name,
-                "shape": df.shape,
-                "columns": list(df.columns),
-                "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
-                "sample_data": df.head(5).to_dict('records'),
-                "null_counts": df.isnull().sum().to_dict(),
-                "memory_usage": f"{df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB"
-            }
-            
-            return json.dumps(result, indent=2, default=str)
-            
-        except Exception as e:
-            logger.error(f"Error reading worksheet: {e}")
-            return json.dumps({"success": False, "error": str(e)})
-    
-    def _arun(self, sheet_name: str, parameters: Dict[str, Any]|None = None):
-        raise NotImplementedError("Async not implemented")
+def read_worksheet(sheet_name: str = "Sheet1", nrows: int = 1000, file_path: Optional[str] = None) -> str:
+    if not file_path:
+        return "No file loaded. Please upload a file first."
+    try:
+        df = pd.read_excel(file_path, sheet_name=sheet_name, nrows=nrows)
+        result = {
+            "success": True,
+            "sheet_name": sheet_name,
+            "shape": df.shape,
+            "columns": list(df.columns),
+            "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+            "sample_data": df.head(5).to_dict('records'),
+            "null_counts": df.isnull().sum().to_dict(),
+            "memory_usage": f"{df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB"
+        }
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
 
-class FilterDataTool(BaseTool):
-    name: str = "filter_data"
-    description: str = """
-    Filter Excel data based on conditions.
-    Input: sheet_name (string), parameters (dict with: conditions, columns)
-    conditions format: [{"column": "sales", "operator": ">", "value": 1000}]
-    Returns: Filtered data summary
-    """
-    
-    def __init__(self, file_handler):
-        super().__init__()
-        self.file_handler = file_handler
-    
-    def _run(self, sheet_name: str, parameters: Dict[str, Any]|None = None) -> str:
-        try:
-            if not hasattr(self, '_current_file'):
-                return "No file currently loaded."
-            
-            params = parameters or {}
-            conditions = params.get('conditions', [])
-            columns = params.get('columns', None)
-            
-            # Read data
-            df = pd.read_excel(self._current_file, sheet_name=sheet_name)
-            original_shape = df.shape
-            
-            # Apply filters
-            for condition in conditions:
-                col = condition['column']
-                operator = condition['operator']
-                value = condition['value']
-                
-                # Handle different operators
-                if operator == '>':
-                    df = df[df[col] > value]
-                elif operator == '<':
-                    df = df[df[col] < value]
-                elif operator == '>=':
-                    df = df[df[col] >= value]
-                elif operator == '<=':
-                    df = df[df[col] <= value]
-                elif operator == '==':
-                    df = df[df[col] == value]
-                elif operator == '!=':
-                    df = df[df[col] != value]
-                elif operator == 'contains':
-                    df = df[df[col].str.contains(str(value), na=False)]
-                elif operator == 'in':
-                    df = df[df[col].isin(value if isinstance(value, list) else [value])]
-            
-            # Select columns if specified
-            if columns:
-                df = df[columns]
-            
-            result = {
-                "success": True,
-                "original_shape": original_shape,
-                "filtered_shape": df.shape,
-                "conditions_applied": conditions,
-                "sample_results": df.head(10).to_dict('records'),
-                "summary_stats": df.describe().to_dict() if df.select_dtypes(include='number').shape[1] > 0 else {}
-            }
-            
-            return json.dumps(result, indent=2, default=str)
-            
-        except Exception as e:
-            logger.error(f"Error filtering data: {e}")
-            return json.dumps({"success": False, "error": str(e)})
-    
-    def _arun(self, sheet_name: str, parameters: Dict[str, Any]|None = None):
-        raise NotImplementedError("Async not implemented")
+read_worksheet_tool = StructuredTool.from_function(
+    func=read_worksheet,
+    name="read_worksheet",
+    description="Read data from an Excel worksheet.",
+    args_schema=ReadWorksheetArgs
+)
 
-class AggregateDataTool(BaseTool):
-    name: str = "aggregate_data"
-    description: str = """
-    Perform aggregations on Excel data.
-    Input: sheet_name (string), parameters (dict with: group_by, aggregations, filters)
-    aggregations format: {"column": "sales", "functions": ["sum", "mean", "count"]}
-    Returns: Aggregated results
-    """
-    
-    def __init__(self, file_handler):
-        super().__init__()
-        self.file_handler = file_handler
-    
-    def _run(self, sheet_name: str, parameters: Dict[str, Any] |None= None) -> str:
-        try:
-            if not hasattr(self, '_current_file'):
-                return "No file currently loaded."
-            
-            params = parameters or {}
-            group_by = params.get('group_by', [])
-            aggregations = params.get('aggregations', {})
-            
-            # Read data
-            df = pd.read_excel(self._current_file, sheet_name=sheet_name)
-            
-            if group_by:
-                # Group by aggregation
-                grouped = df.groupby(group_by)
-                agg_dict = {}
-                
-                for col, functions in aggregations.items():
-                    if isinstance(functions, str):
-                        functions = [functions]
-                    for func in functions:
-                        agg_dict[f"{col}_{func}"] = (col, func)
-                
-                result_df = grouped.agg(agg_dict).round(2)
-                result_df.columns = [col for col in result_df.columns]
-                result_df = result_df.reset_index()
-            else:
-                # Simple aggregation
-                agg_results = {}
-                for col, functions in aggregations.items():
-                    if isinstance(functions, str):
-                        functions = [functions]
-                    for func in functions:
-                        agg_results[f"{col}_{func}"] = getattr(df[col], func)()
-                
-                result_df = pd.DataFrame([agg_results])
-            
-            result = {
-                "success": True,
-                "aggregation_summary": {
-                    "group_by": group_by,
-                    "aggregations": aggregations,
-                    "result_shape": result_df.shape
-                },
-                "results": result_df.to_dict('records')
-            }
-            
-            return json.dumps(result, indent=2, default=str)
-            
-        except Exception as e:
-            logger.error(f"Error aggregating data: {e}")
-            return json.dumps({"success": False, "error": str(e)})
-    
-    def _arun(self, sheet_name: str, parameters: Dict[str, Any]|None = None):
-        raise NotImplementedError("Async not implemented")
+# --- Structured Tool: Filter Data ---
+class FilterDataArgs(BaseModel):
+    sheet_name: str = Field(default="Sheet1", description="Name of the worksheet")
+    column: str = Field(..., description="Column to filter on")
+    operator: str = Field(..., description="Filter operator, e.g. >, <, ==, !=, contains")
+    value: Any = Field(..., description="Value to filter by")
+    file_path: Optional[str] = Field(default=None, description="Path to the Excel file")
 
-class SortDataTool(BaseTool):
-    name: str = "sort_data"
-    description: str = """
-    Sort Excel data by one or more columns.
-    Input: sheet_name (string), parameters (dict with: sort_by, ascending)
-    sort_by format: [{"column": "date", "ascending": False}, {"column": "sales", "ascending": True}]
-    Returns: Sorted data summary
-    """
-    
-    def __init__(self, file_handler):
-        super().__init__()
-        self.file_handler = file_handler
-    
-    def _run(self, sheet_name: str, parameters: Dict[str, Any] |None= None) -> str:
-        try:
-            if not hasattr(self, '_current_file'):
-                return "No file currently loaded."
-            
-            params = parameters or {}
-            sort_by = params.get('sort_by', [])
-            
-            # Read data
-            df = pd.read_excel(self._current_file, sheet_name=sheet_name)
-            
-            if sort_by:
-                columns = [item['column'] for item in sort_by]
-                ascending = [item.get('ascending', True) for item in sort_by]
-                
-                df_sorted = df.sort_values(by=columns, ascending=ascending)
-            else:
-                df_sorted = df
-            
-            result = {
-                "success": True,
-                "sort_criteria": sort_by,
-                "shape": df_sorted.shape,
-                "sample_data": df_sorted.head(10).to_dict('records')
-            }
-            
-            return json.dumps(result, indent=2, default=str)
-            
-        except Exception as e:
-            logger.error(f"Error sorting data: {e}")
-            return json.dumps({"success": False, "error": str(e)})
-    
-    def _arun(self, sheet_name: str, parameters: Dict[str, Any]|None = None):
-        raise NotImplementedError("Async not implemented")
+def filter_data(sheet_name: str = "Sheet1", column: str = None, operator: str = None, value: Any = None, file_path: Optional[str] = None) -> str:
+    if not file_path:
+        return "No file loaded. Please upload a file first."
+    try:
+        df = pd.read_excel(file_path, sheet_name=sheet_name)
+        # Convert the column to numeric if possible, drop NaNs
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors='coerce')
+            df = df.dropna(subset=[column])
+            # Try to convert value to float if column is numeric
+            if pd.api.types.is_numeric_dtype(df[column]):
+                try:
+                    value = float(value)
+                except Exception:
+                    pass  # If conversion fails, keep as is
+        original_shape = df.shape
+        if column and operator and value is not None:
+            if operator == '>':
+                df = df[df[column] > value]
+            elif operator == '<':
+                df = df[df[column] < value]
+            elif operator == '>=':
+                df = df[df[column] >= value]
+            elif operator == '<=':
+                df = df[df[column] <= value]
+            elif operator == '==':
+                df = df[df[column] == value]
+            elif operator == '!=':
+                df = df[df[column] != value]
+            elif operator == 'contains':
+                df = df[df[column].astype(str).str.contains(str(value), na=False)]
+        result = {
+            "success": True,
+            "original_shape": original_shape,
+            "filtered_shape": df.shape,
+            "filter_applied": f"{column} {operator} {value}" if column else "No filter",
+            "sample_results": df.head(10).to_dict('records'),
+            "summary_stats": df.describe().to_dict() if df.select_dtypes(include='number').shape[1] > 0 else {}
+        }
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
 
-class PivotTableTool(BaseTool):
-    name: str = "pivot_table"
-    description: str = """
-    Create pivot tables from Excel data.
-    Input: sheet_name (string), parameters (dict with: index, columns, values, aggfunc)
-    Returns: Pivot table results
-    """
-    
-    def __init__(self, file_handler):
-        super().__init__()
-        self.file_handler = file_handler
-    
-    def _run(self, sheet_name: str, parameters: Dict[str, Any] |None= None) -> str:
-        try:
-            if not hasattr(self, '_current_file'):
-                return "No file currently loaded."
-            
-            params = parameters or {}
-            index = params.get('index', [])
-            columns = params.get('columns', [])
-            values = params.get('values', [])
-            aggfunc = params.get('aggfunc', 'sum')
-            
-            # Read data
-            df = pd.read_excel(self._current_file, sheet_name=sheet_name)
-            
-            # Create pivot table
-            pivot = pd.pivot_table(
-                df, 
-                index=index if index else None,
-                columns=columns if columns else None,
-                values=values if values else None,
-                aggfunc=aggfunc,
-                fill_value=0
-            )
-            
-            # Convert to regular dataframe for serialization
-            pivot_df = pivot.reset_index()
-            
-            result = {
-                "success": True,
-                "pivot_config": {
-                    "index": index,
-                    "columns": columns,
-                    "values": values,
-                    "aggfunc": aggfunc
-                },
-                "shape": pivot_df.shape,
-                "results": pivot_df.to_dict('records')
-            }
-            
-            return json.dumps(result, indent=2, default=str)
-            
-        except Exception as e:
-            logger.error(f"Error creating pivot table: {e}")
-            return json.dumps({"success": False, "error": str(e)})
-    
-    def _arun(self, sheet_name: str, parameters: Dict[str, Any]|None = None):
-        raise NotImplementedError("Async not implemented")
+filter_data_tool = StructuredTool.from_function(
+    func=filter_data,
+    name="filter_data",
+    description="Filter Excel data based on a column, operator, and value.",
+    args_schema=FilterDataArgs
+)
+
+# --- Structured Tool: Aggregate Data ---
+class AggregateDataArgs(BaseModel):
+    sheet_name: str = Field(default="Sheet1", description="Name of the worksheet")
+    group_by: Optional[str] = Field(default=None, description="Column to group by (optional)")
+    aggregate_column: str = Field(..., description="Column to aggregate")
+    function: str = Field(default="sum", description="Aggregation function, e.g. sum, mean, count")
+    file_path: Optional[str] = Field(default=None, description="Path to the Excel file")
+
+def aggregate_data(sheet_name: str = "Sheet1", group_by: str = None, aggregate_column: str = None, function: str = "sum", file_path: Optional[str] = None) -> str:
+    if not file_path:
+        return "No file loaded. Please upload a file first."
+    try:
+        # Map synonyms to pandas functions
+        function_map = {
+            "average": "mean",
+            "avg": "mean"
+        }
+        pandas_func = function_map.get(function.lower(), function)
+        df = pd.read_excel(file_path, sheet_name=sheet_name)
+        if group_by and aggregate_column:
+            grouped = df.groupby(group_by)
+            agg_dict = {f"{aggregate_column}_{pandas_func}": (aggregate_column, pandas_func)}
+            result_df = grouped.agg(agg_dict).round(2)
+            result_df = result_df.reset_index()
+        elif aggregate_column:
+            # No group_by: aggregate the whole column
+            result_df = pd.DataFrame([{f"{aggregate_column}_{pandas_func}": getattr(df[aggregate_column], pandas_func)()}])
+        else:
+            return "Please specify aggregate_column for aggregation."
+        result = {
+            "success": True,
+            "aggregation_summary": {
+                "group_by": group_by,
+                "aggregate_column": aggregate_column,
+                "function": pandas_func,
+                "result_shape": result_df.shape
+            },
+            "results": result_df.to_dict('records')
+        }
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+aggregate_data_tool = StructuredTool.from_function(
+    func=aggregate_data,
+    name="aggregate_data",
+    description="Perform aggregation on Excel data by grouping and applying a function to a column.",
+    args_schema=AggregateDataArgs
+)
+
+# --- Structured Tool: Sort Data ---
+class SortDataArgs(BaseModel):
+    sheet_name: str = Field(default="Sheet1", description="Name of the worksheet")
+    sort_column: str = Field(..., description="Column to sort by")
+    ascending: bool = Field(default=True, description="Sort ascending (True) or descending (False)")
+    file_path: Optional[str] = Field(default=None, description="Path to the Excel file")
+
+def sort_data(sheet_name: str = "Sheet1", sort_column: str = None, ascending: bool = True, file_path: Optional[str] = None) -> str:
+    if not file_path:
+        return "No file loaded. Please upload a file first."
+    try:
+        df = pd.read_excel(file_path, sheet_name=sheet_name)
+        # Convert the sort column to numeric if possible, drop NaNs
+        if sort_column in df.columns:
+            df[sort_column] = pd.to_numeric(df[sort_column], errors='coerce')
+            df = df.dropna(subset=[sort_column])
+        if sort_column:
+            df_sorted = df.sort_values(by=sort_column, ascending=ascending)
+        else:
+            df_sorted = df
+        result = {
+            "success": True,
+            "sort_criteria": f"{sort_column} {'ascending' if ascending else 'descending'}" if sort_column else "No sorting",
+            "shape": df_sorted.shape,
+            "sample_data": df_sorted.head(10).to_dict('records')
+        }
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+sort_data_tool = StructuredTool.from_function(
+    func=sort_data,
+    name="sort_data",
+    description="Sort Excel data by a column, ascending or descending.",
+    args_schema=SortDataArgs
+)
+
+# --- Structured Tool: Pivot Table ---
+class PivotTableArgs(BaseModel):
+    sheet_name: str = Field(default="Sheet1", description="Name of the worksheet")
+    index: list[str] = Field(..., description="List of columns to use as index (rows) in the pivot table")
+    columns: list[str] = Field(..., description="List of columns to use as columns in the pivot table")
+    values: list[str] = Field(..., description="List of columns to aggregate in the pivot table")
+    aggfunc: str = Field(default="sum", description="Aggregation function, e.g. sum, mean, count")
+    file_path: Optional[str] = Field(default=None, description="Path to the Excel file")
+
+def pivot_table(sheet_name: str = "Sheet1", index: list[str] = None, columns: list[str] = None, values: list[str] = None, aggfunc: str = "sum", file_path: Optional[str] = None) -> str:
+    if not file_path:
+        return "No file loaded. Please upload a file first."
+    try:
+        df = pd.read_excel(file_path, sheet_name=sheet_name)
+        pivot = pd.pivot_table(
+            df,
+            index=index if index else None,
+            columns=columns if columns else None,
+            values=values if values else None,
+            aggfunc=aggfunc,
+            fill_value=0
+        )
+        pivot_df = pivot.reset_index()
+        result = {
+            "success": True,
+            "pivot_config": {
+                "index": index,
+                "columns": columns,
+                "values": values,
+                "aggfunc": aggfunc
+            },
+            "shape": pivot_df.shape,
+            "results": pivot_df.to_dict('records')
+        }
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+pivot_table_tool = StructuredTool.from_function(
+    func=pivot_table,
+    name="pivot_table",
+    description="Create a pivot table from Excel data.",
+    args_schema=PivotTableArgs
+)
