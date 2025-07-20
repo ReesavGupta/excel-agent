@@ -9,6 +9,12 @@ from langchain_core.tools import StructuredTool
 
 logger = logging.getLogger(__name__)
 
+def handle_excel_load_error(e):
+    msg = str(e).lower()
+    if 'password' in msg or 'protected' in msg:
+        return json.dumps({"success": False, "error": "This Excel file is password-protected. Please remove the password and upload again."})
+    return json.dumps({"success": False, "error": "The uploaded file appears to be corrupted or unreadable. Please check the file and try again."})
+
 # --- Structured Tool: Read Worksheet ---
 class ReadWorksheetArgs(BaseModel):
     sheet_name: Optional[str] = Field(default="Sheet1", description="Name of the worksheet")
@@ -40,7 +46,7 @@ def read_worksheet(sheet_name: str = "Sheet1", nrows: int = 1000, file_path: Opt
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
         logger.error(f"read_worksheet error: {e}")
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 read_worksheet_tool = StructuredTool.from_function(
     func=read_worksheet,
@@ -100,7 +106,7 @@ def filter_data(sheet_name: str = "Sheet1", column: str = None, operator: str = 
         }
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 filter_data_tool = StructuredTool.from_function(
     func=filter_data,
@@ -152,7 +158,7 @@ def aggregate_data(sheet_name: str = "Sheet1", group_by: str = None, aggregate_c
         }
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 aggregate_data_tool = StructuredTool.from_function(
     func=aggregate_data,
@@ -191,7 +197,7 @@ def sort_data(sheet_name: str = "Sheet1", sort_column: str = None, ascending: bo
         }
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 sort_data_tool = StructuredTool.from_function(
     func=sort_data,
@@ -238,7 +244,7 @@ def pivot_table(sheet_name: str = "Sheet1", index: list[str] = None, columns: li
         }
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 pivot_table_tool = StructuredTool.from_function(
     func=pivot_table,
@@ -292,7 +298,7 @@ def merge_worksheets(sheet_names: Optional[List[str]] = None, mode: str = "stack
         }
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 merge_worksheets_tool = StructuredTool.from_function(
     func=merge_worksheets,
@@ -350,7 +356,7 @@ def split_worksheet(sheet_name: str, column: str, file_path: Optional[str] = Non
         }
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 split_worksheet_tool = StructuredTool.from_function(
     func=split_worksheet,
@@ -407,7 +413,7 @@ def data_validation(sheet_name: str, file_path: Optional[str] = None) -> str:
         }
         return json.dumps(result, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 data_validation_tool = StructuredTool.from_function(
     func=data_validation,
@@ -454,7 +460,7 @@ def write_results(sheet_name: Optional[str] = None, data: Optional[List[Dict[str
         }
         return json.dumps(result, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 write_results_tool = StructuredTool.from_function(
     func=write_results,
@@ -515,7 +521,7 @@ def formula_evaluation(sheet_name: str, formula: str, new_column_name: Optional[
             result["output_file"] = out_path
         return json.dumps(result, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 formula_evaluation_tool = StructuredTool.from_function(
     func=formula_evaluation,
@@ -543,7 +549,6 @@ def chart_generation(sheet_name: str, chart_type: str, x_column: Optional[str] =
     import os
     import json
     import io
-    import os
     if not file_path:
         return json.dumps({"success": False, "error": "No file loaded."})
     file_path = os.path.normpath(file_path)
@@ -556,9 +561,21 @@ def chart_generation(sheet_name: str, chart_type: str, x_column: Optional[str] =
         img_bytes = None
         chart_type = chart_type.lower()
         if chart_type == 'bar':
-            if not x_column or not y_column:
-                return json.dumps({"success": False, "error": "x_column and y_column are required for bar chart."})
-            plt.bar(df[x_column], df[y_column])
+            # Most defensive fallback for value counts
+            if x_column and y_column and x_column == y_column:
+                value_counts = df[x_column].value_counts()
+                plt.bar(value_counts.index.astype(str), value_counts.values)
+            elif x_column and not y_column:
+                value_counts = df[x_column].value_counts()
+                plt.bar(value_counts.index.astype(str), value_counts.values)
+            elif x_column and y_column:
+                if pd.api.types.is_numeric_dtype(df[y_column]):
+                    plt.bar(df[x_column].astype(str), df[y_column])
+                else:
+                    value_counts = df[x_column].value_counts()
+                    plt.bar(value_counts.index.astype(str), value_counts.values)
+            else:
+                return json.dumps({"success": False, "error": "x_column (and optionally y_column) are required for bar chart. If only x_column is provided, value counts will be plotted."})
         elif chart_type == 'line':
             if not x_column or not y_column:
                 return json.dumps({"success": False, "error": "x_column and y_column are required for line chart."})
@@ -568,9 +585,21 @@ def chart_generation(sheet_name: str, chart_type: str, x_column: Optional[str] =
                 return json.dumps({"success": False, "error": "x_column and y_column are required for scatter chart."})
             plt.scatter(df[x_column], df[y_column])
         elif chart_type == 'pie':
-            if not label_column or not y_column:
-                return json.dumps({"success": False, "error": "label_column and y_column are required for pie chart."})
-            plt.pie(df[y_column], labels=df[label_column], autopct='%1.1f%%')
+            # Most robust fallback for value counts
+            if label_column and y_column and label_column == y_column:
+                value_counts = df[label_column].value_counts()
+                plt.pie(value_counts.values, labels=value_counts.index, autopct='%1.1f%%')
+            elif label_column and not y_column:
+                value_counts = df[label_column].value_counts()
+                plt.pie(value_counts.values, labels=value_counts.index, autopct='%1.1f%%')
+            elif label_column and y_column:
+                if pd.api.types.is_numeric_dtype(df[y_column]):
+                    plt.pie(df[y_column], labels=df[label_column], autopct='%1.1f%%')
+                else:
+                    value_counts = df[label_column].value_counts()
+                    plt.pie(value_counts.values, labels=value_counts.index, autopct='%1.1f%%')
+            else:
+                return json.dumps({"success": False, "error": "label_column (and optionally y_column) are required for pie chart. If only label_column is provided, value counts will be plotted."})
         else:
             return json.dumps({"success": False, "error": f"Unsupported chart type: {chart_type}"})
         if title:
@@ -598,7 +627,7 @@ def chart_generation(sheet_name: str, chart_type: str, x_column: Optional[str] =
         plt.close()
         return json.dumps(result, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return handle_excel_load_error(e)
 
 chart_generation_tool = StructuredTool.from_function(
     func=chart_generation,

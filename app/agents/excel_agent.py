@@ -115,7 +115,7 @@ Always specify the sheet_name when using tools.
         return context
     
     def query(self, user_query: str, sheet_name: Optional[str] = None) -> Dict[str, Any]:
-        """Process natural language query using LLM-driven tool calling and file_path injection"""
+        """Process natural language query using LLM-driven tool calling and file_path injection, with column mapping"""
         try:
             if not self.current_file:
                 return {"success": False, "error": "No file loaded. Please upload a file first."}
@@ -141,6 +141,31 @@ IMPORTANT: If the user says 'first column', use the actual first column name fro
                     tool_args = tool_call['args']
                     # Inject file_path if the tool expects it
                     tool_args['file_path'] = self.current_file
+
+                    # --- Column mapping integration ---
+                    col_keys = ['column', 'group_by', 'aggregate_column', 'sort_column', 'x_column', 'y_column', 'label_column']
+                    # Try to get available columns for the relevant sheet
+                    sheet = tool_args.get('sheet_name', None)
+                    available_columns = []
+                    if self.current_file_info and sheet and sheet in self.current_file_info['sheet_info']:
+                        available_columns = self.current_file_info['sheet_info'][sheet]['columns']
+                    elif self.current_file_info and self.current_file_info['sheet_names']:
+                        # Fallback: use first sheet
+                        fallback_sheet = self.current_file_info['sheet_names'][0]
+                        available_columns = self.current_file_info['sheet_info'][fallback_sheet]['columns']
+                    for key in col_keys:
+                        if key in tool_args and tool_args[key]:
+                            best_match, reason, score = self.column_mapper.best_column_match(tool_args[key], available_columns)
+                            if best_match and score >= 80:
+                                tool_args[key] = best_match
+                            elif best_match:
+                                logger.warning(f"Low confidence mapping for '{tool_args[key]}' to '{best_match}' (score {score}, reason {reason})")
+                                tool_args[key] = best_match  # Optionally still use it
+                            else:
+                                logger.error(f"No column match for '{tool_args[key]}' in available columns: {available_columns}")
+                                # Optionally: return a message to the user or skip tool call
+                    # --- End column mapping integration ---
+
                     for tool in self.tools:
                         if tool.name == tool_name:
                             try:

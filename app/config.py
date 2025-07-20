@@ -12,7 +12,7 @@ class Config:
     
     # LLM Configuration (Groq)
     GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
-    MODEL_NAME: str = "llama3-8b-8192"  # Fast and efficient Groq model
+    MODEL_NAME: str = "llama-3.3-70b-versatile"
     MAX_TOKENS: int = 2000
     TEMPERATURE: float = 0.1
     

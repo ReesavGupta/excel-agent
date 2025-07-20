@@ -7,6 +7,8 @@ import logging
 import json
 from datetime import datetime
 from dotenv import load_dotenv
+import base64
+from io import BytesIO
 
 load_dotenv()
 
@@ -93,6 +95,12 @@ def display_query_examples():
             if st.button(example, key=f"example_{i}"):
                 st.session_state.query_input = example
 
+def make_arrow_compatible(df):
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].astype(str)
+    return df
+
 def process_query_response(response):
     """Process and display query response in a presentable format"""
     if response['success']:
@@ -112,12 +120,19 @@ def process_query_response(response):
                         try:
                             parsed = json.loads(json_part)
                             if isinstance(parsed, dict):
+                                # --- Chart preview image display ---
+                                if 'preview_base64' in parsed and parsed['preview_base64']:
+                                    st.write("**Chart Preview:**")
+                                    img_bytes = base64.b64decode(parsed['preview_base64'])
+                                    st.image(BytesIO(img_bytes))
                                 # --- Special handling for split_worksheet ---
                                 if tool_name == 'split_worksheet' and 'summary' in parsed:
                                     st.write("**Split Summary:**")
                                     for item in parsed['summary']:
                                         st.write(f"Value: {item['value']} | Rows: {item['rows']} | File: {item['file']}")
-                                        st.dataframe(pd.DataFrame(item['sample_data']))
+                                        df = pd.DataFrame(item['sample_data'])
+                                        df = make_arrow_compatible(df)
+                                        st.dataframe(df)
                                         import os
                                         if os.path.exists(item['file']):
                                             with open(item['file'], "rb") as f:
@@ -125,13 +140,19 @@ def process_query_response(response):
                                 # --- End special handling ---
                                 if 'sample_results' in parsed and parsed['sample_results']:
                                     st.write("**Sample Results:**")
-                                    st.dataframe(pd.DataFrame(parsed['sample_results']))
+                                    df = pd.DataFrame(parsed['sample_results'])
+                                    df = make_arrow_compatible(df)
+                                    st.dataframe(df)
                                 if 'sample_data' in parsed and parsed['sample_data']:
                                     st.write("**Sample Data:**")
-                                    st.dataframe(pd.DataFrame(parsed['sample_data']))
+                                    df = pd.DataFrame(parsed['sample_data'])
+                                    df = make_arrow_compatible(df)
+                                    st.dataframe(df)
                                 if 'results' in parsed and parsed['results']:
                                     st.write("**Results:**")
-                                    st.dataframe(pd.DataFrame(parsed['results']))
+                                    df = pd.DataFrame(parsed['results'])
+                                    df = make_arrow_compatible(df)
+                                    st.dataframe(df)
                                 if 'summary_stats' in parsed and parsed['summary_stats']:
                                     st.write("**Summary Statistics:**")
                                     st.json(parsed['summary_stats'])
@@ -149,12 +170,19 @@ def process_query_response(response):
             else:
                 if isinstance(response['response'], str) and response['response'].startswith('{'):
                     parsed_response = json.loads(response['response'])
+                    # --- Chart preview image display ---
+                    if 'preview_base64' in parsed_response and parsed_response['preview_base64']:
+                        st.write("**Chart Preview:**")
+                        img_bytes = base64.b64decode(parsed_response['preview_base64'])
+                        st.image(BytesIO(img_bytes))
                     # --- Special handling for split_worksheet ---
                     if 'summary' in parsed_response:
                         st.write("**Split Summary:**")
                         for item in parsed_response['summary']:
                             st.write(f"Value: {item['value']} | Rows: {item['rows']} | File: {item['file']}")
-                            st.dataframe(pd.DataFrame(item['sample_data']))
+                            df = pd.DataFrame(item['sample_data'])
+                            df = make_arrow_compatible(df)
+                            st.dataframe(df)
                             import os
                             if os.path.exists(item['file']):
                                 with open(item['file'], "rb") as f:
@@ -162,10 +190,14 @@ def process_query_response(response):
                     # --- End special handling ---
                     if 'sample_data' in parsed_response:
                         st.write("**Sample Data:**")
-                        st.dataframe(pd.DataFrame(parsed_response['sample_data']))
+                        df = pd.DataFrame(parsed_response['sample_data'])
+                        df = make_arrow_compatible(df)
+                        st.dataframe(df)
                     if 'results' in parsed_response:
                         st.write("**Results:**")
-                        st.dataframe(pd.DataFrame(parsed_response['results']))
+                        df = pd.DataFrame(parsed_response['results'])
+                        df = make_arrow_compatible(df)
+                        st.dataframe(df)
                     if 'summary_stats' in parsed_response and parsed_response['summary_stats']:
                         st.write("**Summary Statistics:**")
                         st.json(parsed_response['summary_stats'])
@@ -347,52 +379,52 @@ def main():
             st.warning("⚠️ Please upload and load a file first in the File Upload tab.")
             return
         file_info = st.session_state.get('file_info', {})
-        # Sheet selector
+        # --- Split Worksheet UI ---
+        st.subheader("✂️ Split Worksheet by Column")
+        columns = []
         if file_info.get('sheet_names'):
-            selected_sheet = st.selectbox(
-                "Select Worksheet:",
+            selected_sheet_split = st.selectbox(
+                "Select Worksheet (Split):",
                 file_info['sheet_names'],
                 key="split_sheet_selector"
             )
-            if selected_sheet:
-                sheet_info = file_info['sheet_info'][selected_sheet]
-                st.info(f"**{selected_sheet}**: {sheet_info['max_row']:,} rows × {sheet_info['max_column']} columns")
-                # --- Split Worksheet UI ---
-                st.subheader("✂️ Split Worksheet by Column")
-                # Load columns for the selected sheet
-                try:
-                    current_agent = st.session_state.get('agent')
-                    # Get first 1 row to get columns
-                    response = current_agent.query(f"Show me the first 1 rows from {selected_sheet}")
-                    columns = []
-                    if response['success']:
-                        # Try to extract columns from sample_data
-                        try:
-                            parsed = json.loads(response['response'].split('result:',1)[1])
-                            if 'sample_data' in parsed and parsed['sample_data']:
-                                columns = list(parsed['sample_data'][0].keys())
-                        except Exception:
-                            pass
-                    if not columns:
-                        columns = [f"Column {i+1}" for i in range(sheet_info['max_column'])]
-                except Exception:
-                    columns = []
+            if selected_sheet_split:
+                sheet_info_split = file_info['sheet_info'][selected_sheet_split]
+                st.info(f"**{selected_sheet_split}**: {sheet_info_split['max_row']:,} rows × {sheet_info_split['max_column']} columns")
+                load_columns = st.button("🔄 Load Columns", key="load_columns_btn")
+                if load_columns:
+                    try:
+                        current_agent = st.session_state.get('agent')
+                        response = current_agent.query(f"Show me the first 1 rows from {selected_sheet_split}")
+                        if response['success']:
+                            try:
+                                parsed = json.loads(response['response'].split('result:',1)[1])
+                                if 'sample_data' in parsed and parsed['sample_data']:
+                                    columns = list(parsed['sample_data'][0].keys())
+                            except Exception:
+                                pass
+                        if not columns:
+                            columns = [f"Column {i+1}" for i in range(sheet_info_split['max_column'])]
+                    except Exception:
+                        columns = []
                 split_column = st.selectbox("Select column to split by:", columns, key="split_column_selector")
                 split_btn = st.button("✂️ Split Worksheet", key="split_btn")
                 if split_btn and split_column:
-                    with st.spinner(f"Splitting {selected_sheet} by '{split_column}'..."):
+                    with st.spinner(f"Splitting {selected_sheet_split} by '{split_column}'..."):
                         try:
-                            split_response = current_agent.query(f"Split {selected_sheet} by the '{split_column}' column, so each value gets its own Excel file.")
+                            current_agent = st.session_state.get('agent')
+                            split_response = current_agent.query(f"Split {selected_sheet_split} by the '{split_column}' column, so each value gets its own Excel file.")
                             if split_response['success']:
                                 st.success("Worksheet split successfully!")
-                                # Try to parse and show summary
                                 try:
                                     parsed = json.loads(split_response['response'].split('result:',1)[1])
                                     if 'summary' in parsed:
                                         st.write("**Split Summary:**")
                                         for item in parsed['summary']:
                                             st.write(f"Value: {item['value']} | Rows: {item['rows']} | File: {item['file']}")
-                                            st.dataframe(pd.DataFrame(item['sample_data']))
+                                            df = pd.DataFrame(item['sample_data'])
+                                            df = make_arrow_compatible(df)
+                                            st.dataframe(df)
                                             if os.path.exists(item['file']):
                                                 with open(item['file'], "rb") as f:
                                                     st.download_button(f"Download {os.path.basename(item['file'])}", f, file_name=os.path.basename(item['file']))
@@ -424,13 +456,14 @@ def main():
                         response = current_agent.query(query)
                         if response['success']:
                             st.success("Worksheet saved successfully!")
-                            # Try to parse and show result
                             try:
                                 parsed = json.loads(response['response'].split('result:',1)[1])
                                 st.write(f"**File:** {parsed['output_file']}")
                                 st.write(f"**Rows:** {parsed['rows']}")
                                 st.write(f"**Columns:** {', '.join(parsed['columns'])}")
-                                st.dataframe(pd.DataFrame(parsed['sample_data']))
+                                df = pd.DataFrame(parsed['sample_data'])
+                                df = make_arrow_compatible(df)
+                                st.dataframe(df)
                                 import os
                                 if os.path.exists(parsed['output_file']):
                                     with open(parsed['output_file'], "rb") as f:
@@ -443,16 +476,16 @@ def main():
                     except Exception as e:
                         st.error(f"Error saving worksheet: {e}")
         st.markdown("---")
-        # Existing Data Explorer sample loader ...
+        # --- Sample Data Loader ---
         if file_info.get('sheet_names'):
-            selected_sheet = st.selectbox(
-                "Select Worksheet:",
+            selected_sheet_sample = st.selectbox(
+                "Select Worksheet (Sample):",
                 file_info['sheet_names'],
                 key="sample_sheet_selector"
             )
-            if selected_sheet:
-                sheet_info = file_info['sheet_info'][selected_sheet]
-                st.info(f"**{selected_sheet}**: {sheet_info['max_row']:,} rows × {sheet_info['max_column']} columns")
+            if selected_sheet_sample:
+                sheet_info_sample = file_info['sheet_info'][selected_sheet_sample]
+                st.info(f"**{selected_sheet_sample}**: {sheet_info_sample['max_row']:,} rows × {sheet_info_sample['max_column']} columns")
                 col1, col2 = st.columns(2)
                 with col1:
                     sample_size = st.slider("Sample Size", 10, 1000, 100)
@@ -463,7 +496,7 @@ def main():
                         try:
                             current_agent = st.session_state.get('agent')
                             if current_agent:
-                                response = current_agent.query(f"Show me the first {sample_size} rows from {selected_sheet}")
+                                response = current_agent.query(f"Show me the first {sample_size} rows from {selected_sheet_sample}")
                                 process_query_response(response)
                         except Exception as e:
                             st.error(f"❌ Error loading sample: {str(e)}")
