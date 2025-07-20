@@ -1,4 +1,3 @@
-# app/main.py (Phase 2 - Enhanced with LangChain)
 import streamlit as st
 import pandas as pd
 import sys
@@ -9,6 +8,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import base64
 from io import BytesIO
+import uuid
 
 load_dotenv()
 
@@ -215,10 +215,12 @@ def process_query_response(response):
 def main():
     st.title("🤖 Intelligent Excel Agent - Phase 2")
     st.markdown("*Powered by LangChain & Groq LLM*")
-    
+    # Generate a unique session_id for each user
+    if 'session_id' not in st.session_state:
+        st.session_state['session_id'] = str(uuid.uuid4())
+    session_id = st.session_state['session_id']
     # Get components
     config, file_handler, column_mapper, agent, query_parser = get_components()
-    
     # Sidebar
     with st.sidebar:
         st.title("🎛️ Control Panel")
@@ -264,9 +266,9 @@ def main():
         
         if uploaded_file is not None:
             try:
-                # Save uploaded file
-                upload_dir = Path("uploads")
-                upload_dir.mkdir(exist_ok=True)
+                # Save uploaded file in a user/session-specific directory
+                upload_dir = Path(f"uploads/{session_id}")
+                upload_dir.mkdir(parents=True, exist_ok=True)
                 file_path = upload_dir / uploaded_file.name
                 
                 with open(file_path, "wb") as f:
