@@ -11,7 +11,12 @@ from data_tools.excel_tools import (
     sort_data_tool,
     pivot_table_tool,
     merge_worksheets_tool,
-    split_worksheet_tool
+    split_worksheet_tool,
+    data_validation_tool,
+    write_results_tool,
+    formula_evaluation_tool,
+    chart_generation_tool,
+    echo_tool
 )
 
 logger = logging.getLogger(__name__)
@@ -35,7 +40,12 @@ class ExcelAgent:
             sort_data_tool,
             pivot_table_tool,
             merge_worksheets_tool,
-            split_worksheet_tool
+            split_worksheet_tool,
+            data_validation_tool,
+            write_results_tool,
+            formula_evaluation_tool,
+            chart_generation_tool,
+            echo_tool
         ]
         # Now bind tools to the LLM
         self.llm = ChatGroq(
@@ -93,6 +103,11 @@ AVAILABLE OPERATIONS:
 - pivot_table: Create pivot tables
 - merge_worksheets: Merge multiple sheets
 - split_worksheet: Split a worksheet into multiple files based on unique values in a column
+- data_validation: Validate a worksheet for missing values, type mismatches, and empty sheets
+- write_results: Save a worksheet or provided data to a new Excel file
+- formula_evaluation: Evaluate a formula on a worksheet and optionally save the result
+- chart_generation: Generate a chart from worksheet data and return a preview/image
+- echo: Echoes back the provided message (diagnostic tool)
 
 When the user asks about data analysis, use these tools to provide accurate results.
 Always specify the sheet_name when using tools.

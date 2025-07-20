@@ -1,7 +1,6 @@
 # app/main.py (Phase 2 - Enhanced with LangChain)
 import streamlit as st
 import pandas as pd
-import os
 import sys
 from pathlib import Path
 import logging
@@ -20,7 +19,7 @@ from data_tools.file_handler import ExcelFileHandler
 from data_tools.column_mapper import ColumnMapper
 from agents.excel_agent import ExcelAgent
 from utils.query_parser import QueryParser
-
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -199,7 +198,7 @@ def main():
             value=config.GROQ_API_KEY or "",
             help="Enter your Groq API key"
         )
-        
+        import os
         if api_key:
             config.GROQ_API_KEY = api_key
             os.environ["GROQ_API_KEY"] = api_key
@@ -405,6 +404,45 @@ def main():
                         except Exception as e:
                             st.error(f"Error splitting worksheet: {e}")
                 st.markdown("---")
+        # --- Write Results UI ---
+        st.subheader("💾 Save Worksheet or Data to Excel File")
+        if file_info.get('sheet_names'):
+            save_sheet = st.selectbox(
+                "Select Worksheet to Save:",
+                file_info['sheet_names'],
+                key="save_sheet_selector"
+            )
+            output_file_name = st.text_input("Output File Name (optional):", value="")
+            save_btn = st.button("💾 Save Worksheet", key="save_btn")
+            if save_btn and save_sheet:
+                with st.spinner(f"Saving {save_sheet} to Excel file..."):
+                    try:
+                        current_agent = st.session_state.get('agent')
+                        query = f"Save {save_sheet} as a new Excel file"
+                        if output_file_name.strip():
+                            query += f" named '{output_file_name.strip()}'"
+                        response = current_agent.query(query)
+                        if response['success']:
+                            st.success("Worksheet saved successfully!")
+                            # Try to parse and show result
+                            try:
+                                parsed = json.loads(response['response'].split('result:',1)[1])
+                                st.write(f"**File:** {parsed['output_file']}")
+                                st.write(f"**Rows:** {parsed['rows']}")
+                                st.write(f"**Columns:** {', '.join(parsed['columns'])}")
+                                st.dataframe(pd.DataFrame(parsed['sample_data']))
+                                import os
+                                if os.path.exists(parsed['output_file']):
+                                    with open(parsed['output_file'], "rb") as f:
+                                        st.download_button(f"Download {os.path.basename(parsed['output_file'])}", f, file_name=os.path.basename(parsed['output_file']))
+                            except Exception as e:
+                                st.error(f"Could not parse save result: {e}")
+                                st.write(response['response'])
+                        else:
+                            st.error(f"Save failed: {response.get('error', 'Unknown error')}")
+                    except Exception as e:
+                        st.error(f"Error saving worksheet: {e}")
+        st.markdown("---")
         # Existing Data Explorer sample loader ...
         if file_info.get('sheet_names'):
             selected_sheet = st.selectbox(
